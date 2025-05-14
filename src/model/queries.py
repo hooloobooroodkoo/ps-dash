@@ -142,6 +142,7 @@ def queryThroughputIdx(dateFrom, dateTo):
 
   return aggrs
 
+
 def query_ASN_paths_pos_probs(src, dest, dt, ipv):
   """
   Fetch the document with this alarm_id, and render its heatmap.
@@ -195,6 +196,32 @@ def query_ASN_paths_pos_probs(src, dest, dt, ipv):
   doc = res['hits']['hits'][0]["_source"]
   return doc
 
+
+def queryPathAnomaliesDetails(dateFrom, dateTo, idx='ps_traces_changes'):
+    query = {
+        "bool": {
+            "must": [
+                {"exists": {"field": "transitions"}},
+                  {
+                  "range": {
+                    "to_date": {
+                      "format": "strict_date_optional_time",
+                      "gte": dateFrom,
+                      # "lte": dateTo,
+                    }
+                  }
+                }
+            ]
+        }
+    }
+    res = hp.es.search(index=idx, query=query, size=10000)
+    # collect every transition record from every hit
+    records = []
+    for hit in res["hits"]["hits"]:
+        for t in hit["_source"].get("transitions", []):
+            records.append(t)
+    df = pd.DataFrame(records)
+    return df
 
 
 def queryAlarms(dateFrom, dateTo):
@@ -455,34 +482,6 @@ def query_ASN_anomalies(src, dest, dt):
 
   ddf = pd.DataFrame(data)
   return ddf
-
-
-
-def queryPathAnomaliesDetails(dateFrom, dateTo, idx='ps_traces_changes'):
-    query = {
-        "bool": {
-            "must": [
-                {"exists": {"field": "transitions"}},
-                  {
-                  "range": {
-                    "to_date": {
-                      "format": "strict_date_optional_time",
-                      "gte": dateFrom,
-                      # "lte": dateTo,
-                    }
-                  }
-                }
-            ]
-        }
-    }
-    res = hp.es.search(index=idx, query=query, size=10000)
-    # collect every transition record from every hit
-    records = []
-    for hit in res["hits"]["hits"]:
-        for t in hit["_source"].get("transitions", []):
-            records.append(t)
-    df = pd.DataFrame(records).drop_duplicates()
-    return df
 
 
 def query4Avg(idx, dateFrom, dateTo):

@@ -106,7 +106,7 @@ class Alarms(object):
   def oneInBothWaysUnfold(odf):
     data = []
     print(odf.columns)
-    
+
     for r in odf.to_dict('records'):
       for i, dest_site in enumerate(r['dest_sites']):
         rec = {

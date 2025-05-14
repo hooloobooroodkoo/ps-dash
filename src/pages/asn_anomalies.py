@@ -1,4 +1,5 @@
 import dash
+
 from dash import html
 from dash import Dash, html, dcc, Input, Output, dcc, html, callback
 import dash_bootstrap_components as dbc
@@ -8,10 +9,10 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+import dash_bootstrap_components as dbc
 
 import model.queries as qrs
 from utils.utils import generate_graphs
-
 
 urllib3.disable_warnings()
 
@@ -23,7 +24,6 @@ dash.register_page(
     title="ASN-path anomalies",
     description="Visual representation of an ASN-path anomaly",
 )
-
 
 def layout(q=None, **other_unknown_query_strings):
     return html.Div([
@@ -47,7 +47,6 @@ def layout(q=None, **other_unknown_query_strings):
 )
 def update_store(pathname):
     if pathname:
-
         path_parts = pathname.split('/')
         if len(path_parts) > 2 and '=' in path_parts[2]:
             params = path_parts[2].split('&')
@@ -59,18 +58,16 @@ def update_store(pathname):
 @callback(
     [Output('asn-anomalies-graphs', 'children'),
      Output('page-title', 'children'),
-    ],
+     ],
     Input('alarm-data-store', 'data')
 )
 def update_graphs_and_title(query_params):
-    print(query_params)
     if not query_params:
         return html.Div(), "ASN-path anomalies"
 
     src = query_params.get('src_netsite')
     dest = query_params.get('dest_netsite')
     dt = query_params.get('dt')
-    print(src, dest, dt)
     if not (src and dest):
         return html.Div(), "ASN-path anomalies"
     data = qrs.query_ASN_anomalies(src, dest, dt)
@@ -80,7 +77,6 @@ def update_graphs_and_title(query_params):
             html.P('No data was found for the alarm selected. Please try another alarm.',
                    className="plot-subtitle")
         ], className="l-h-3 p-2 boxwithshadow page-cont ml-1 p-1"), "ASN-path anomalies"
-
     anomalies = data['anomalies'].values[0]
     title = html.Div([
         html.Span(f"{src} → {dest}", className="sites-anomalies-title"),

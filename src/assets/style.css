@@ -16,7 +16,7 @@ html {
 }
 
 .subtitle {
-    font-size: 1.8em !important;
+    font-size: 1.5em !important;
     margin-bottom: 1rem;
 }
 
@@ -60,7 +60,7 @@ html {
 .navbar-light .navbar-nav .show>.nav-link {
     font-weight: 700;
     color: #eff5ff;
-    font-size: 2.5em;
+    font-size: 2.3em;
     transition: all 0.2s ease;
 }
 
@@ -154,14 +154,14 @@ html {
     max-width: 1550px !important;
   }
 
-.dash-table-container th {
+/* .dash-table-container th {
     border-left: 0px !important;
     border-right: 0px !important;
     border-top-color: white !important;
     border-bottom-color: white !important;
     background-color: #ebf1fd !important;
     color: black;
-}
+} */
 
 .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner td div.dash-cell-value.cell-markdown, 
 .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner th div.dash-cell-value.cell-markdown {
@@ -189,7 +189,7 @@ html {
     display: none;
 }
 
-.table-container th {
+.table-container th, .dash-table-container th {
     border-left: 0px !important;
     border-right: 0px !important;
     border-top-color: white !important;
@@ -218,7 +218,7 @@ html {
 }
 
 .site-alarms-tables .card-title {
-    font-size: 2.4rem;
+    font-size: 2.1rem;
     padding: 2rem;
     text-align: center;
 }
@@ -232,8 +232,50 @@ html {
     color: rgb(9, 9, 9);
 }
 
-.site-title {
-    font-size: 3rem !important;
+.plot-subtitle {
+    font-size: 1.3em !important;
+    margin: 1rem;
+    text-align: center;
+    line-height: 1.2em;
+    font-weight: 200;
+    color: #858789;
+}
+
+.anomalies-title {
+    font-weight: normal; 
+    font-size: 1.1  em; 
+    color: #079cd6;
+}
+
+.sites-anomalies-title {
+    font-weight: bold;
+    font-size: 1.3em;
+    color: #33363b;
+}
+
+.responsive-graphs {
+    margin-bottom: 2rem;
+}
+
+.card-title {
+    /* font-family: Consolas !important; */
+    color: #353535;
+}
+
+@media (min-width: 1700px) {
+    .responsive-col {
+        flex: 0 0 48%;
+        /* Each column takes 48% of the width */
+        max-width: 48%;
+    }
+}
+
+@media (max-width: 1700px) {
+    .responsive-col {
+        flex: 0 0 100%;
+        /* Each column takes 100% of the width */
+        max-width: 100%;
+    }
 }
 
 .badge {
@@ -568,7 +610,7 @@ html {
     flex: 0.8;
     margin: 0 2px;
     min-height: 100px;
-    padding: 1%;
+    padding: 2%;
     text-align: center;
     color: rgb(47, 46, 46);
     background-color: #ffffff;
@@ -627,7 +669,7 @@ count-box {
     }
 
     .status-number {
-        font-size: 2.5em !important;
+        font-size: 2em !important;
     }
 
     .status-count-header {
@@ -657,7 +699,7 @@ count-box {
 .status-title-cont {
     text-align: right;
     font-weight: 300;
-    font-size: 2.5em;
+    font-size: 2.1em;
     padding: 0 20px;
 }
 

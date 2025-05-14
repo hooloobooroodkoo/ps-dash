@@ -103,9 +103,6 @@ app.layout = html.Div(children=[
                             [
                                dbc.NavItem(dbc.NavLink("SITES OVERVIEW", href="/",
                                                        id='sites-tab', class_name="nav-item-cls")),
-                                # dbc.NavItem(dbc.NavLink("SEARCH ALARMS", href="/search-alarms",
-                                #                         id='search-tab', class_name="nav-item-cls"
-                                #                         )),
                                 dbc.NavItem(dbc.NavLink("EXPLORE PATHS", href="/explore-paths",
                                                         id='paths-tab', class_name="nav-item-cls"
                                                         )),
@@ -162,12 +159,18 @@ def hide_loading_after_startup(loading_state, children):
 
 @app.callback(
     Output("navbar-collapse", "is_open"),
-    [Input("navbar-toggler", "n_clicks")],
+    [Input("navbar-toggler", "n_clicks"), Input("url", "pathname")],
     [State("navbar-collapse", "is_open")],
 )
-def toggle_navbar_collapse(n, is_open):
-    if n:
-        return not is_open
+def toggle_navbar_collapse(n, pathname, is_open):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return is_open
+    trigger = ctx.triggered[0]["prop_id"].split(".")[0]
+    if trigger == "navbar-toggler":
+        return not is_open if n else is_open
+    elif trigger == "url":
+        return False  # Always close menu on navigation
     return is_open
 
 

@@ -3,6 +3,7 @@ from dash import Dash, html, dcc, Input, Output, Patch, callback, State, ctx, da
 import dash_bootstrap_components as dbc
 import pandas as pd
 
+import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 
@@ -10,6 +11,7 @@ import utils.helpers as hp
 import model.queries as qrs
 from model.Alarms import Alarms
 from utils.parquet import Parquet
+from utils.helpers import timer
 
 
 def title():
@@ -23,7 +25,7 @@ def description(q=None):
 
 pq = Parquet()
 alarmsInst = Alarms()
-selected_keys = ['path changed between sites', 'path changed', 'ASN path anomalies']
+selected_keys = ['ASN path anomalies']
 
 
 dash.register_page(
@@ -33,57 +35,98 @@ dash.register_page(
     description=description,
 )
 
-def get_dropdown_data(asn_anomalies, pivotFrames, changeDf):
+# Utility: robust parquet reader with error handling
+def read_parquet_safe(path):
+    try:
+        df = pd.read_parquet(path)
+        if df.empty:
+            print(f"Warning: {path} is empty.")
+        return df
+    except Exception as e:
+        print(f"Error reading {path}: {e}")
+        return pd.DataFrame()
+
+# Utility: common filter for DataFrames
+def apply_common_filters(df, selected_asns=None, selected_sites=None, anomalies_col='anomalies', src_col='src_netsite', dest_col='dest_netsite'):
+    if selected_asns:
+        df = df[df[anomalies_col].apply(lambda asn_list: any(str(a) in [str(x) for x in asn_list] for a in selected_asns))]
+    if selected_sites:
+        df = df[(df[src_col].isin(selected_sites)) | (df[dest_col].isin(selected_sites))]
+    return df
+
+def get_dropdown_data(asn_anomalies, pivotFrames):
     # sites
     unique_sites = pd.unique(asn_anomalies[['src_netsite', 'dest_netsite']].values.ravel()).tolist()
-    unique_sites.extend(pivotFrames['path changed'].tag.unique().tolist())
 
     sitesDropdownData = [{"label": str(a), "value": a} for a in sorted(list(set(unique_sites)))]
 
     # ASNs
     unique_asns = pd.unique(asn_anomalies['anomalies'].explode()).tolist()
-    sortedDf = changeDf[changeDf['jumpedFrom'] > 0].sort_values('count')
-    asnsDropdownData = list(set(sortedDf['diff'].unique().tolist() +
-                                sortedDf['jumpedFrom'].unique().tolist()))
-    asnsDropdownData = list(set(asnsDropdownData + unique_asns))
-    asnsDropdownData = [{"label": str(a), "value": a} for a in sorted(asnsDropdownData)]
+    unique_asns = [str(a) for a in unique_asns if str(a) != 'nan']
+    asnsDropdownData = [{"label": str(a), "value": str(a)} for a in sorted(unique_asns, key=lambda x: str(x))]
 
     print(f"Unique sites: {len(sitesDropdownData)}, Unique ASNs: {len(asnsDropdownData)}")
 
     return sitesDropdownData, asnsDropdownData
 
 
+@timer
 def layout(**other_unknown_query_strings):
-    changeDf = pq.readFile('parquet/prev_next_asn.parquet')
-    asn_anomalies = pq.readFile('parquet/frames/ASN_path_anomalies.parquet')
+    asn_anomalies = read_parquet_safe('parquet/frames/ASN_path_anomalies.parquet')
 
-    dateFrom, dateTo = hp.defaultTimeRange(2)
+    if asn_anomalies.empty:
+        return dbc.Row([
+            dbc.Col([
+                html.Div([
+                    html.H1("No Data Available", className="text-center"),
+                    html.P("There is currently no data to display on this page. Please check back later.", className="text-center")
+                ], className="boxwithshadow page-cont ml-1 p-1")
+            ], xl=12, lg=12, md=12, sm=12, className="mb-1 flex-grow-1")
+        ])
+
+    dateFrom, dateTo = hp.defaultTimeRange(days=2)
     frames, pivotFrames = alarmsInst.loadData(dateFrom, dateTo)
     period_to_display = hp.defaultTimeRange(days=2, datesOnly=True)
 
-    sankey_fig, dataTables = load_initial_data(selected_keys, changeDf, asn_anomalies)
-    heatmap_fig = create_anomalies_heatmap(asn_anomalies, dateFrom, dateTo)
+    # Skip plot creation if there is no data
+    if asn_anomalies.empty:
+        dataTables = html.Div([
+            html.P("No data available for the selected criteria.", className="text-center")
+        ])
+        return dbc.Row([
+            dbc.Col([
+                html.Div([
+                    html.H1("No Data Available", className="text-center"),
+                    html.P("There is currently no data to display on this page. Please check back later.", className="text-center")
+                ], className="boxwithshadow page-cont ml-1 p-1")
+            ], xl=12, lg=12, md=12, sm=12, className="mb-1 flex-grow-1")
+        ])
 
-    sitesDropdownData, asnsDropdownData = get_dropdown_data(asn_anomalies, pivotFrames, changeDf)
+    dataTables = generate_data_tables(selected_keys, asn_anomalies)
+
+    heatmap_fig = get_heatmap_fig(asn_anomalies, dateFrom, dateTo)
+    parallel_cat_fig = get_parallel_cat_fig([], [])
+
+    sitesDropdownData, asnsDropdownData = get_dropdown_data(asn_anomalies, pivotFrames)
 
     return dbc.Row([
         dbc.Row([
             dbc.Col([
                 html.Div([
                     html.Div([
-                        html.H1(f"Short term path deviations between sites"),
-                        html.P('The plot shows how ASNs were replaced in the period of 2 days. The data is based on the alarms of type "path changed"', style={"font-size": "1.2rem"})
+                        html.H1(f"ASN Transition Effects"),
+                        html.P('The plot shows how ASNs were replaced in the period of 2 days. The data is based on the alarms of type "ASN path anomalies"', style={"font-size": "1.2rem"})
                     ], className="l-h-3 p-2"),
                     dcc.Loading(
-                        dcc.Graph(figure=sankey_fig, id="asn-sankey"), color='#00245A'),
+                        dcc.Graph(figure=parallel_cat_fig, id="asn-sankey"), color='#00245A'),
                 ], className="boxwithshadow page-cont ml-1 p-1")
             ], xl=6, lg=12, md=12, sm=12, className=" mb-1 flex-grow-1",
             ),
             dbc.Col([
                 html.Div(id="asn-alarms-container", children=[
                     html.Div([
-                        html.H1(f"ASN path anomalies"),
-                        html.P('The plot shows new ASNs that appeared between two sites. The data is based on the alarms of type "ASN path anomalies"', style={"font-size": "1.2rem"})
+                        html.H1(f"ASN-path Anomalies Affected Links"),
+                        html.P('The plot shows the number of new ASNs that appeared between two sites. The data is based on the alarms of type "ASN path anomalies"', style={"font-size": "1.2rem"})
                     ], className="l-h-3 p-2"),
                     dcc.Loading(
                         dcc.Graph(figure=heatmap_fig, id="asn-heatmap", style={"max-width": "1000px", "margin": "0 auto"}),
@@ -122,7 +165,8 @@ def layout(**other_unknown_query_strings):
                 dbc.Row([
                     dbc.Col([
                         dbc.Button("Search", id="search-button", color="secondary", 
-                                   className="mlr-2", style={"width": "100%", "font-size": "1.5em"})
+                                   className="mlr-2", style={"width": "100%", "font-size": "1.5em"},
+                                   title="Click to apply the selected filters to the plots and tables.")
                     ])
                 ]),
             ], lg=12, md=12),
@@ -146,42 +190,19 @@ def layout(**other_unknown_query_strings):
     ], className=' main-cont', align="center", style={"padding": "0.5% 1.5%"})
 
 
-def colorMap(eventTypes):
-  colors = ['#75cbe6', '#3b6d8f', '#75E6DA', '#189AB4', '#2E8BC0', '#145DA0', '#05445E', '#0C2D48',
-            '#5EACE0', '#d6ebff', '#498bcc', '#82cbf9',
-            '#2894f8', '#fee838', '#3e6595', '#4adfe1', '#b14ae1'
-            '#1f77b4', '#ff7f0e', '#2ca02c', '#00224e', '#123570', '#3b496c', '#575d6d', '#707173', '#8a8678', '#a59c74',
-            ]
-
-  paletteDict = {}
-  for i, e in enumerate(eventTypes):
-      paletteDict[e] = colors[i]
-
-  return paletteDict
-
-
-def load_initial_data(sselected_keys, changeDf, asn_anomalies):
-    dateFrom, dateTo = hp.defaultTimeRange(2)
+@timer
+def load_initial_data(selected_keys, asn_anomalies):
+    dateFrom, dateTo = hp.defaultTimeRange(days=2)
     frames, pivotFrames = alarmsInst.loadData(dateFrom, dateTo)
     dataTables = []
-
-    # Filter out non-numeric values before conversion
-    changeDf = changeDf[pd.to_numeric(changeDf['jumpedFrom'], errors='coerce').notnull()]
-    changeDf['jumpedFrom'] = changeDf['jumpedFrom'].fillna(0).astype(int)
-    changeDf['diff'] = changeDf['diff'].astype(int)
 
     for event in sorted(selected_keys):
         if event in pivotFrames.keys():
             df = pivotFrames[event]
             if len(df) > 0:
                 dataTables.append(generate_tables(frames[event], df, event, alarmsInst))
-
-    # Explicitly cast 'jumpedFrom' column to object dtype before assigning 'No data'
-    changeDf['jumpedFrom'] = changeDf['jumpedFrom'].astype(object)
-    changeDf.loc[changeDf['jumpedFrom'] == 0, 'jumpedFrom'] = 'No data'
-    fig = buildSankey([], [], changeDf)
-
-    return [fig, dataTables]
+    fig = get_parallel_cat_fig([], [])
+    return [dataTables, fig]
 
 
 @dash.callback(
@@ -199,38 +220,28 @@ def load_initial_data(sselected_keys, changeDf, asn_anomalies):
 )
 def update_figures(n_clicks, asnStateValue, sitesStateValue):
     if n_clicks is not None:
-        # Define the necessary variables within the callback function
-        changeDf = pq.readFile('parquet/prev_next_asn.parquet')
-        asn_anomalies = pq.readFile('parquet/frames/ASN_path_anomalies.parquet')
-        dateFrom, dateTo = hp.defaultTimeRange(2)
+        asn_anomalies = read_parquet_safe('parquet/frames/ASN_path_anomalies.parquet')
+        dateFrom, dateTo = hp.defaultTimeRange(days=2)
 
         sitesState = sitesStateValue if sitesStateValue else []
         asnState = asnStateValue if asnStateValue else []
 
-        sankey_fig = buildSankey(sitesState, asnState, changeDf)
-        heatmap_fig = create_anomalies_heatmap(asn_anomalies, dateFrom, dateTo, selected_asns=asnState, selected_sites=sitesState)
+        parallel_cat_fig = get_parallel_cat_fig(sitesState, asnState)
+        heatmap_fig = get_heatmap_fig(asn_anomalies, dateFrom, dateTo, selected_asns=asnState, selected_sites=sitesState)
         datatables = create_data_tables(sitesState, asnState, selected_keys)
-        return sankey_fig, heatmap_fig, datatables
+        return parallel_cat_fig, heatmap_fig, datatables
 
     return dash.no_update
 
 
 def filterASN(df, selected_asns=[], selected_sites=[]):
-
-  if selected_asns:
-      s = df.apply(lambda x: pd.Series(x['anomalies']), axis=1).stack().reset_index(level=1, drop=True)
-      s.name = 'asn'
-      df = df.join(s)
-      df = df[df['asn'].isin(selected_asns)]
-      df = df.drop('asn', axis=1).drop_duplicates(subset=['alarm_id'])
-  if selected_sites:
-      df = df[(df['src_netsite'].isin(selected_sites)) | (df['dest_netsite'].isin(selected_sites))]
-  
-  return df
+    # Use the new utility for filtering
+    return apply_common_filters(df, selected_asns, selected_sites)
 
 
+@timer
 def create_data_tables(sitesState, asnState, selected_keys):
-    dateFrom, dateTo = hp.defaultTimeRange(2)
+    dateFrom, dateTo = hp.defaultTimeRange(days=2)
     frames, pivotFrames = alarmsInst.loadData(dateFrom, dateTo)
     dataTables = []
     for event in sorted(selected_keys):
@@ -256,13 +267,40 @@ def create_data_tables(sitesState, asnState, selected_keys):
 
     return html.Div(dataTables)
 
+@timer
+def generate_data_tables(selected_keys, asn_anomalies):
+    dateFrom, dateTo = hp.defaultTimeRange(days=2)
+    frames, pivotFrames = alarmsInst.loadData(dateFrom, dateTo)
+    dataTables = []
+
+    for event in sorted(selected_keys):
+        if event in pivotFrames.keys():
+            df = pivotFrames[event]
+            if len(df) > 0:
+                dataTables.append(generate_tables(frames[event], df, event, alarmsInst))
+
+    if len(dataTables) == 0:
+        dataTables.append(html.P(
+            f'There are no alarms related to the selected criteria',
+            style={"padding-left": "1.5%", "font-size": "14px"}
+        ))
+
+    return html.Div(dataTables)
 
 
+def get_heatmap_fig(asn_anomalies, dateFrom, dateTo, selected_asns=[], selected_sites=[]):
+    return create_anomalies_heatmap(asn_anomalies, dateFrom, dateTo, selected_asns=selected_asns, selected_sites=selected_sites)
+
+
+def get_parallel_cat_fig(sitesState, asnState):
+    return build_parallel_categories_plot(sitesState, asnState)
+
+
+@timer
 def create_anomalies_heatmap(asn_anomalies, dateFrom, dateTo, selected_asns=[], selected_sites=[]):
-    print('Creating heatmap', dateFrom, dateTo, selected_asns, selected_sites)
     df = asn_anomalies.copy()
     df = df[df['to_date'] >= dateFrom]
-    df = filterASN(df, selected_asns=selected_asns, selected_sites=selected_sites)
+    df = apply_common_filters(df, selected_asns, selected_sites)
 
     if len(df) > 0:
         # Create a summary table with counts and ASN list per IPv6 and IPv4
@@ -353,12 +391,13 @@ def create_anomalies_heatmap(asn_anomalies, dateFrom, dateTo, selected_asns=[], 
     return fig
 
 
+@timer
 # '''Takes the sites from the dropdown list and generates a Dash datatable'''
 def generate_tables(frame, pivotFrame, event, alarmsInst):
     ids = pivotFrame['id'].values
     dfr = frame[frame.index.isin(ids)]
     dfr = alarmsInst.formatDfValues(dfr, event).sort_values('to', ascending=False)
-    print('Paths page,', event, "Number of alarms:", len(dfr))
+    # print('Paths page,', event, "Number of alarms:", len(dfr))
 
     element = html.Div([
         html.Br(),
@@ -397,143 +436,119 @@ def generate_tables(frame, pivotFrame, event, alarmsInst):
     return element
 
 
+@timer
 # '''Creates a list of labels with network providers'''
-def addNetworkOwners(df, labels):
-  asns = list(set(df['jumpedFrom'].unique().tolist() +
-              df['diff'].unique().tolist()))
-  owners = qrs.getASNInfo(asns)
-
-  customdata = []
-  for l in labels:
-    if l in owners.keys():
-      customdata.append(f'<b>{l}</b>: {owners[l]}')
-    else:
-      customdata.append(l)
-
-  return customdata
+def addNetworkOwners(df, asn_list):
+    owners = qrs.getASNInfo(asn_list)
+    customdata = []
+    for asn in asn_list:
+        if asn in owners.keys():
+            customdata.append(f'{asn}: {owners[asn]}')
+        else:
+            customdata.append(f'{asn}: Unknown')
+    return customdata
 
 
-# ''' Prepares the data for the Sankey diagram'''
-def data4Sankey(sandf):
-    sandf = sandf[~sandf['diff'].isin(['No data', '0', 0])]
-    typical = [f't{n}' for n in sandf['jumpedFrom'].unique().tolist()]
-    diff = [f'd{n}' for n in sandf['diff'].unique().tolist()]
-    src = [f'src_{n}' for n in sandf['src_site'].unique().tolist()]
-    dst = [f'dst_{n}' for n in sandf['dest_site'].unique().tolist()]
-    nodes = src + dst + typical + diff
-    nodesdict = {n: i for i, n in enumerate(nodes)}
+@timer
+def build_parallel_categories_plot(sitesState, asnState) -> go.Figure:
+    """
+    Query all docs with transitions existing and to_date==to_date,
+    then build one combined parallel-categories figure.
+    Handles list-type 'previously_used_asn' and 'new_asn' columns.
+    """
+    # Read pre-stored data from parquet file generated by Updater()
+    try:
+        df = read_parquet_safe('parquet/asn_path_changes.parquet')
+    except Exception as e:
+        print("Error reading parquet file:", e)
+        return go.Figure()
+    if df.empty:
+        return go.Figure()
 
-    labels = [n.replace('src_', '').replace('dst_', '').replace(
-        'd', '').replace('t', '') for n in nodes]
-    customdata = addNetworkOwners(sandf, labels)
+    # Explode both list columns to get all combinations
+    df = df.explode('previously_used_asn')
+    df = df.explode('new_asn')
 
-    so, ta, vals, tuples = [], [], [], []
-    for index, row in sandf.iterrows():
-        typ = f"t{row['jumpedFrom']}"
-        diff = f"d{row['diff']}"
-        ssite = f"src_{row['src_site']}"
-        dsite = f"dst_{row['dest_site']}"
-        cnt = row['count']
-        if (ssite, typ) not in tuples:
-            so.append(nodesdict[ssite])
-            ta.append(nodesdict[typ])
-            vals.append(cnt)
-            tuples.append((ssite, typ))
+    # Convert to string for display
+    df['previously_used_asn'] = df['previously_used_asn'].astype(str)
+    df['new_asn'] = df['new_asn'].astype(str)
 
-        if (typ, diff) not in tuples:
-            so.append(nodesdict[typ])
-            ta.append(nodesdict[diff])
-            vals.append(cnt)
-            tuples.append((typ, diff))
-
-        if (diff, dsite) not in tuples:
-            so.append(nodesdict[diff])
-            ta.append(nodesdict[dsite])
-            vals.append(cnt)
-            tuples.append((diff, dsite))
-
-    return labels, so, ta, vals, customdata
-
-
-# '''Creates a Sankey diagram'''
-def buildSankey(sitesState, asnState, df):
+    # Filtering
     if len(sitesState) > 0 and len(asnState) > 0:
-        df = df[((df['src_site'].isin(sitesState)) |
-                (df['dest_site'].isin(sitesState))) & ((df['jumpedFrom'].isin(asnState)) |
-                (df['diff'].isin(asnState)))]
-
+        df = df[((df['source_site'].isin(sitesState)) | (df['destination_site'].isin(sitesState))) &
+                ((df['new_asn'].isin(asnState)) | (df['previously_used_asn'].isin(asnState)))]
     elif len(sitesState) > 0:
-        df = df[(df['src_site'].isin(sitesState)) |
-                (df['dest_site'].isin(sitesState))]
+        df = df[(df['source_site'].isin(sitesState)) | (df['destination_site'].isin(sitesState))]
     elif len(asnState) > 0:
-        df = df[(df['jumpedFrom'].isin(asnState)) |
-                (df['diff'].isin(asnState))]
+        df = df[((df['new_asn'].isin(asnState)) | (df['previously_used_asn'].isin(asnState)))]
 
-    labels, sources, targets, vals, customdata = data4Sankey(df)
+    if df.empty:
+        return go.Figure()
 
-    if len(df) > 0:
-        fig = go.Figure(data=[go.Sankey(
-            node=dict(
-                pad=15,
-                thickness=20,
-                line=dict(color="grey", width=0.5),
-                label=labels,
-                customdata=customdata,
-                hovertemplate='%{customdata}<extra></extra>',
-                color="rgb(4, 111, 137)"
-            ),
-            link=dict(
-                # indices correspond to labels
-                source=sources,
-                target=targets,
-                value=vals
-            ))])
+    df['asn_code'] = pd.Categorical(df['new_asn']).codes
+    unique_asn_count = df['asn_code'].nunique()
 
-        for x_coordinate, column_name in enumerate(["Source site", "Previously used ASN", "New ASN", "Desination site"]):
-            fig.add_annotation(
-                x=x_coordinate,
-                y=1.15,
-                xref="x",
-                yref="paper",
-                text=column_name,
-                showarrow=False,
-                font=dict(
-                    size=16,
-                ),
-                #   align="center",
-            )
-
-        fig.update_layout(
-            height=600,
-            # title_text=f"Short term path deviations between sites",
-            xaxis={
-                'showgrid': False,  # thin lines in the background
-                'zeroline': False,  # thick line at x=0
-                'visible': False,  # numbers below
-            },
-            yaxis={
-                'showgrid': False,  # thin lines in the background
-                'zeroline': False,  # thick line at x=0
-                'visible': False,  # numbers below
-            },
-            # margin=dict(b=2, l=0, r=0),
-            plot_bgcolor='rgba(0,0,0,0)',
-            font_size=10)
+    # Dynamically determine font size based on label length
+    label_fields = ["source_site", "previously_used_asn", "new_asn", "destination_site"]
+    max_label_len = 0
+    for field in label_fields:
+        if field in df.columns:
+            max_label_len = max(max_label_len, df[field].astype(str).map(len).max())
+    # Set font size: shrink if label is long
+    if max_label_len > 30:
+        font_size = 10
+    elif max_label_len > 20:
+        font_size = 12
     else:
-        fig = go.Figure(data=[go.Sankey()])
-        fig.update_layout(
-            annotations=[
-                dict(
-                    text="No data available for the selected criteria or there was no AS number previuosly used at the position of the new ASN.",
-                    showarrow=False,
-                    font=dict(size=16),
-                    xref="paper",
-                    yref="paper",
-                    x=0.5,
-                    y=0.5,
-                )
-            ]
+        font_size = 14
+
+    if unique_asn_count == 0:
+        return go.Figure()
+    elif unique_asn_count == 1:
+        fig = px.parallel_categories(
+            df,
+            dimensions=label_fields,
+            labels={
+                "source_site": "Source site",
+                "previously_used_asn": "Previously used ASN",
+                "new_asn": "New ASN",
+                "destination_site": "Destination site"
+            }
         )
+    else:
+        palette = px.colors.sequential.Viridis_r
+        fig = px.parallel_categories(
+            df,
+            color='asn_code',
+            color_continuous_scale=palette[:unique_asn_count],
+            dimensions=label_fields,
+            labels={
+                "source_site": "Source site",
+                "previously_used_asn": "Previously used ASN",
+                "new_asn": "New ASN",
+                "destination_site": "Destination site"
+            }
+        )
+
+    fig.update_layout(
+        margin=dict(t=20, b=20, l=150, r=150),
+        height=600,
+        showlegend=False,
+        coloraxis_showscale=False,
+        font=dict(size=font_size)
+    )
 
     return fig
 
+
+
+def generate_figures(asn_anomalies):
+    dateFrom, dateTo = hp.defaultTimeRange(days=2)
+
+    # Generate the heatmap figure
+    heatmap_fig = get_heatmap_fig(asn_anomalies, dateFrom, dateTo)
+
+    # Generate the parallel categories figure
+    parallel_cat_fig = get_parallel_cat_fig([], [])
+
+    return heatmap_fig, parallel_cat_fig
